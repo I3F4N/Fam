@@ -29,6 +29,9 @@ export default function FamilyGraph() {
   const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] } | null>(null);
   const [clanSet, setClanSet] = useState<Set<string>>(new Set());
   
+  // Security State
+  const [isAdmin, setIsAdmin] = useState(false);
+
   // HUD & UI State
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [relationshipText, setRelationshipText] = useState<string>("");
@@ -46,11 +49,20 @@ export default function FamilyGraph() {
     relation: 'child'
   });
 
-  // --- DATA FETCHING ---
+  // --- DATA FETCHING & SECURITY CHECK ---
   const fetchGraphData = useCallback(async () => {
     console.log("Fetching Graph Data...");
-    const { data: user } = await supabase.auth.getUser();
-    const currentUserId = user.user?.id;
+    
+    // 1. Check Identity & Set Permissions
+    const { data: { user } } = await supabase.auth.getUser();
+    const currentUserId = user?.id;
+    const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
+
+    if (user && user.email === adminEmail) {
+        setIsAdmin(true);
+    } else {
+        setIsAdmin(false);
+    }
 
     const { data: members } = await supabase.from('members').select('*');
     const { data: connections } = await supabase.from('connections').select('*');
@@ -171,7 +183,7 @@ export default function FamilyGraph() {
       const distance = 40;
       const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
       graphRef.current.cameraPosition(
-        { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, node, 1500
+        { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, node, 3000
       );
     }
   };
@@ -204,7 +216,7 @@ export default function FamilyGraph() {
   const handleBackgroundClick = () => {
     setSelectedNode(null); setRelationshipText(""); setIsModalOpen(false);
     if (graphRef.current) {
-      graphRef.current.cameraPosition({ x: 0, y: 0, z: 400 }, { x: 0, y: 0, z: 0 }, 1500);
+      graphRef.current.cameraPosition({ x: 0, y: 0, z: 400 }, { x: 0, y: 0, z: 0 }, 3000);
     }
   };
 
@@ -437,9 +449,15 @@ export default function FamilyGraph() {
             <div className="flex-1">
               <div className="flex items-center gap-2">
                   <h2 className="text-xl font-bold text-white tracking-tight truncate">{selectedNode.name}</h2>
-                  {/* ADMIN ACTIONS */}
-                  <button onClick={handleOpenEdit} className="text-zinc-500 hover:text-white transition" title="Edit Profile">✏️</button>
-                  <button onClick={handleDelete} className="text-zinc-500 hover:text-red-500 transition" title="Delete Member">🗑️</button>
+                  
+                  {/* --- SECURE ADMIN CONTROLS --- */}
+                  {isAdmin && (
+                    <>
+                      <button onClick={handleOpenEdit} className="text-zinc-500 hover:text-white transition" title="Edit Profile">✏️</button>
+                      <button onClick={handleDelete} className="text-zinc-500 hover:text-red-500 transition" title="Delete Member">🗑️</button>
+                    </>
+                  )}
+
               </div>
               <p className="text-zinc-400 text-xs">ID: {selectedNode.id.slice(0,8)}</p>
             </div>
@@ -448,7 +466,11 @@ export default function FamilyGraph() {
             <p className="text-[10px] uppercase tracking-widest text-zinc-500 mb-1">RELATIONSHIP PROTOCOL</p>
             <p className="text-md text-emerald-400 font-mono leading-tight">{relationshipText}</p>
           </div>
-          <button onClick={handleOpenAdd} className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold tracking-widest rounded border border-indigo-400 shadow-[0_0_15px_rgba(79,70,229,0.4)] transition-all">+ ADD RELATIVE</button>
+          
+          {/* --- SECURE ADD BUTTON --- */}
+          {isAdmin && (
+             <button onClick={handleOpenAdd} className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold tracking-widest rounded border border-indigo-400 shadow-[0_0_15px_rgba(79,70,229,0.4)] transition-all">+ ADD RELATIVE</button>
+          )}
         </div>
       )}
 
