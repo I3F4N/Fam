@@ -8,7 +8,7 @@ import SpriteText from 'three-spritetext';
 import * as THREE from 'three'; 
 import { findRelationship } from '@/utils/relationshipCalculator'; 
 import { addRelative } from '@/app/actions/addRelative'; 
-import { updateMember, deleteMember } from '@/app/actions/nodeOperations'; // <--- NEW IMPORTS
+import { updateMember, deleteMember } from '@/app/actions/nodeOperations';
 
 // 1. Dynamic Import
 const ForceGraph3D = dynamic(() => import('react-force-graph-3d'), {
@@ -37,7 +37,7 @@ export default function FamilyGraph() {
   
   // Editor State
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [modalMode, setModalMode] = useState<'add' | 'edit'>('add'); // <--- NEW STATE
+  const [modalMode, setModalMode] = useState<'add' | 'edit'>('add');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     firstName: '',
@@ -61,8 +61,8 @@ export default function FamilyGraph() {
       id: m.id,
       user_id: m.user_id,
       name: m.first_name + ' ' + m.last_name,
-      firstName: m.first_name, // Store for Edit Form
-      lastName: m.last_name,   // Store for Edit Form
+      firstName: m.first_name, 
+      lastName: m.last_name,   
       gender: m.gender,
       img: m.avatar_url
     }));
@@ -136,41 +136,26 @@ export default function FamilyGraph() {
     return clanIds;
   };
 
-// --- VISUAL UPGRADE: COSMOS (Fixed for Production) ---
+  // --- VISUAL UPGRADE: COSMOS ---
   useEffect(() => {
-    if (!graphData) return;
+    if (graphData && graphRef.current) {
+      const scene = graphRef.current.scene();
+      if (scene.getObjectByName('starfield')) return;
 
-    // Retry logic: Keep checking for the scene every 200ms until it exists
-    const interval = setInterval(() => {
-      if (graphRef.current) {
-        const scene = graphRef.current.scene();
-        if (scene) {
-          // 1. Scene Found! Stop checking.
-          clearInterval(interval);
-          
-          // 2. Prevent duplicates
-          if (scene.getObjectByName('starfield')) return;
-
-          // 3. Create Stars
-          const starGeometry = new THREE.BufferGeometry();
-          const starCount = 1500;
-          const positions = new Float32Array(starCount * 3);
-          for (let i = 0; i < starCount * 3; i++) {
-            positions[i] = (Math.random() - 0.5) * 4000; 
-          }
-          starGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-          const starMaterial = new THREE.PointsMaterial({
-            color: 0xffffff, size: 2, sizeAttenuation: true, transparent: true, opacity: 0.8
-          });
-          const stars = new THREE.Points(starGeometry, starMaterial);
-          stars.name = 'starfield';
-          scene.add(stars);
-        }
+      const starGeometry = new THREE.BufferGeometry();
+      const starCount = 1500;
+      const positions = new Float32Array(starCount * 3);
+      for (let i = 0; i < starCount * 3; i++) {
+        positions[i] = (Math.random() - 0.5) * 4000; 
       }
-    }, 200); // Check every 200ms
-
-    // Cleanup: Stop checking if component unmounts
-    return () => clearInterval(interval);
+      starGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const starMaterial = new THREE.PointsMaterial({
+        color: 0xffffff, size: 2, sizeAttenuation: true, transparent: true, opacity: 0.8
+      });
+      const stars = new THREE.Points(starGeometry, starMaterial);
+      stars.name = 'starfield';
+      scene.add(stars);
+    }
   }, [graphData]);
 
   // --- SEARCH & INTERACTION ---
@@ -186,7 +171,7 @@ export default function FamilyGraph() {
       const distance = 40;
       const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
       graphRef.current.cameraPosition(
-        { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, node, 3000
+        { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, node, 1500
       );
     }
   };
@@ -219,46 +204,42 @@ export default function FamilyGraph() {
   const handleBackgroundClick = () => {
     setSelectedNode(null); setRelationshipText(""); setIsModalOpen(false);
     if (graphRef.current) {
-      graphRef.current.cameraPosition({ x: 0, y: 0, z: 400 }, { x: 0, y: 0, z: 0 }, 3000);
+      graphRef.current.cameraPosition({ x: 0, y: 0, z: 400 }, { x: 0, y: 0, z: 0 }, 1500);
     }
   };
 
-  // --- HANDLER: OPEN ADD MODAL ---
+  // --- HANDLERS (Modal/Actions) ---
   const handleOpenAdd = () => {
     setModalMode('add');
     setFormData({ firstName: '', lastName: '', gender: 'male', relation: 'child' });
     setIsModalOpen(true);
   };
 
-  // --- HANDLER: OPEN EDIT MODAL ---
   const handleOpenEdit = () => {
     if (!selectedNode) return;
     setModalMode('edit');
-    // Pre-fill form
     setFormData({ 
         firstName: selectedNode.firstName, 
         lastName: selectedNode.lastName, 
         gender: selectedNode.gender, 
-        relation: 'child' // Unused in edit mode
+        relation: 'child' 
     });
     setIsModalOpen(true);
   };
 
-  // --- HANDLER: DELETE ---
   const handleDelete = async () => {
     if (!selectedNode) return;
     if (window.confirm(`Are you sure you want to permanently delete ${selectedNode.name}?`)) {
         const result = await deleteMember(selectedNode.id);
         if (result.success) {
-            setSelectedNode(null); // Close HUD
-            await fetchGraphData(); // Refresh Graph
+            setSelectedNode(null); 
+            await fetchGraphData(); 
         } else {
             alert("Error deleting member: " + result.error);
         }
     }
   };
 
-  // --- HANDLER: SUBMIT FORM (ADD OR EDIT) ---
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedNode) return;
@@ -274,9 +255,7 @@ export default function FamilyGraph() {
     if (result.success) {
       await fetchGraphData();
       setIsModalOpen(false);
-      // If we edited the current node, we should update the HUD title locally or just close/reopen
       if (modalMode === 'edit') {
-         // Quick fix: Update selected node name visually for immediate feedback
          setSelectedNode({
              ...selectedNode,
              name: `${formData.firstName} ${formData.lastName}`,
@@ -289,22 +268,21 @@ export default function FamilyGraph() {
     setIsSubmitting(false);
   };
 
-  // --- VISUAL UPGRADE: BLOODLINE RENDERER ---
+  // --- VISUAL RENDERER ---
   const nodeThreeObject = useCallback((node: any) => {
     const group = new THREE.Group();
     
-    // 1. Text Label
+    // Label
     const label = new SpriteText(node.name);
     label.color = 'white';
     label.textHeight = 3; 
     label.position.set(0, -9, 0); 
 
-    // 2. Check Bloodline Status
+    // Bloodline Check
     const isClanMember = clanSet.has(node.id);
     
-    // 3. Render Geometry (Avatar or Sphere)
+    // Geometry
     if (node.img) {
-      // --- AVATAR MODE ---
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       const size = 256; canvas.width = size; canvas.height = size;
@@ -332,19 +310,16 @@ export default function FamilyGraph() {
         };
       }
     } else {
-      // --- SPHERE MODE ---
       const geometry = new THREE.SphereGeometry(4, 32, 32);
       let material;
 
       if (isClanMember) {
         material = new THREE.MeshPhysicalMaterial({ 
-          color: 0xFFD700,
-          roughness: 0.2, metalness: 1.0, emissive: 0xaa6c39, emissiveIntensity: 0.2, clearcoat: 1.0
+          color: 0xFFD700, roughness: 0.2, metalness: 1.0, emissive: 0xaa6c39, emissiveIntensity: 0.2, clearcoat: 1.0
         });
       } else {
         material = new THREE.MeshPhysicalMaterial({ 
-          color: 0x6366f1,
-          roughness: 0, metalness: 0.1, transmission: 0.6, thickness: 1.5, emissive: 0x6366f1, emissiveIntensity: 0.2
+          color: 0x6366f1, roughness: 0, metalness: 0.1, transmission: 0.6, thickness: 1.5, emissive: 0x6366f1, emissiveIntensity: 0.2
         });
       }
 
@@ -352,7 +327,7 @@ export default function FamilyGraph() {
       group.add(sphere);
     }
     
-    // 4. Gender Indicator
+    // Gender Ring
     if (node.gender === 'female') {
         const ringGeo = new THREE.TorusGeometry(5, 0.1, 8, 50); 
         const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.6, transparent: true });
@@ -370,14 +345,17 @@ export default function FamilyGraph() {
   return (
     <div className="relative w-full h-screen bg-black overflow-hidden">
       
-      {/* HEADER */}
-      <header className="fixed top-0 left-0 w-full z-50 flex items-center justify-between px-8 py-6 pointer-events-none">
-        <div className="pointer-events-auto">
+      {/* --- RESPONSIVE HEADER --- */}
+      <header className="fixed top-0 left-0 w-full z-50 flex flex-col md:flex-row items-center justify-between px-4 py-4 md:px-8 md:py-6 pointer-events-none gap-4">
+        
+        {/* Title */}
+        <div className="pointer-events-auto text-center md:text-left">
           <h1 className="text-white font-bold tracking-widest text-lg drop-shadow-md">PROJECT BILAVINAKATH</h1>
           <p className="text-zinc-500 text-[10px] uppercase tracking-[0.3em]">Bloodline Visualization v3.0</p>
         </div>
 
-        <div className="pointer-events-auto relative w-96">
+        {/* Search Bar */}
+        <div className="pointer-events-auto relative w-full md:w-96">
           <div className="relative group">
             <div className="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-lg blur opacity-30 group-hover:opacity-60 transition duration-1000"></div>
             <input type="text" placeholder="Search Member..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
@@ -396,7 +374,8 @@ export default function FamilyGraph() {
           )}
         </div>
 
-        <div className="pointer-events-auto">
+        {/* Disconnect Button */}
+        <div className="pointer-events-auto absolute top-4 right-4 md:static">
           <button onClick={handleLogout} className="px-6 py-2 bg-black/40 backdrop-blur-md border border-red-500/30 rounded-full text-[10px] tracking-[0.2em] font-bold text-red-500 hover:text-red-400 hover:bg-red-500/10 transition-all duration-300 shadow-lg">DISCONNECT</button>
         </div>
       </header>
@@ -431,8 +410,8 @@ export default function FamilyGraph() {
         }}
       />
 
-      {/* LEGEND */}
-      <div className="absolute bottom-10 right-10 p-4 bg-black/40 backdrop-blur-md border border-white/10 rounded-lg pointer-events-none select-none">
+      {/* --- RESPONSIVE LEGEND --- */}
+      <div className="absolute bottom-4 right-4 md:bottom-10 md:right-10 scale-75 origin-bottom-right md:scale-100 p-4 bg-black/40 backdrop-blur-md border border-white/10 rounded-lg pointer-events-none select-none z-0">
         <h4 className="text-[10px] text-zinc-500 uppercase tracking-widest mb-3 border-b border-white/10 pb-2">Index</h4>
         <div className="flex items-center gap-3 mb-2">
             <div className="w-3 h-3 rounded-full bg-yellow-500 shadow-[0_0_10px_#FFD700]"></div>
@@ -444,9 +423,9 @@ export default function FamilyGraph() {
         </div>
       </div>
 
-      {/* HUD & MODAL */}
+      {/* --- RESPONSIVE HUD & MODAL --- */}
       {selectedNode && (
-        <div className="absolute bottom-10 left-10 z-40 p-6 bg-zinc-900/80 border border-zinc-700 rounded-xl backdrop-blur-md max-w-md shadow-2xl select-none">
+        <div className="fixed bottom-4 left-4 right-4 md:absolute md:left-10 md:bottom-10 md:right-auto md:w-auto z-40 p-6 bg-zinc-900/90 border border-zinc-700 rounded-xl backdrop-blur-md max-w-md shadow-2xl select-none">
           <div className="flex items-center gap-4 mb-4">
              {selectedNode.img ? (
               <img src={selectedNode.img} alt="avatar" className="w-12 h-12 rounded-full object-cover border-2 border-white/20" />
@@ -457,7 +436,7 @@ export default function FamilyGraph() {
             )}
             <div className="flex-1">
               <div className="flex items-center gap-2">
-                  <h2 className="text-xl font-bold text-white tracking-tight">{selectedNode.name}</h2>
+                  <h2 className="text-xl font-bold text-white tracking-tight truncate">{selectedNode.name}</h2>
                   {/* ADMIN ACTIONS */}
                   <button onClick={handleOpenEdit} className="text-zinc-500 hover:text-white transition" title="Edit Profile">✏️</button>
                   <button onClick={handleDelete} className="text-zinc-500 hover:text-red-500 transition" title="Delete Member">🗑️</button>
@@ -473,9 +452,9 @@ export default function FamilyGraph() {
         </div>
       )}
 
-      {/* SHARED MODAL (ADD / EDIT) */}
+      {/* SHARED MODAL */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="w-full max-w-sm bg-zinc-900 border border-zinc-700 rounded-xl p-6 shadow-2xl relative">
             <h3 className="text-lg font-bold text-white mb-4">
                 {modalMode === 'add' ? `Add Relative to ${selectedNode?.firstName}` : `Edit Profile: ${selectedNode?.firstName}`}
@@ -491,7 +470,6 @@ export default function FamilyGraph() {
                   <option value="male">Male</option><option value="female">Female</option>
                 </select>
                 
-                {/* HIDE RELATION IN EDIT MODE */}
                 {modalMode === 'add' && (
                     <select className="bg-black border border-zinc-700 rounded p-2 text-white text-sm outline-none focus:border-indigo-500" value={formData.relation} onChange={e => setFormData({...formData, relation: e.target.value})}>
                     <option value="child">Child (Son/Daughter)</option><option value="spouse">Spouse (Wife/Husband)</option><option value="parent">Parent (Mom/Dad)</option><option value="sibling">Sibling (Brother/Sister)</option>
