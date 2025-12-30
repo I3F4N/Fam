@@ -1,0 +1,404 @@
+'use client';
+
+import { useEffect, useState, useRef, useCallback } from 'react';
+import dynamic from 'next/dynamic';
+import { createClient } from '@supabase/supabase-js';
+import { useRouter } from 'next/navigation'; // For Logout Refresh
+import SpriteText from 'three-spritetext';
+import * as THREE from 'three'; 
+import { findRelationship } from '@/utils/relationshipCalculator'; 
+import { addRelative } from '@/app/actions/addRelative'; 
+
+// 1. Dynamic Import
+const ForceGraph3D = dynamic(() => import('react-force-graph-3d'), {
+  ssr: false
+});
+
+// 2. Client Init
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+export default function FamilyGraph() {
+  const router = useRouter();
+  const graphRef = useRef<any>(null);
+  
+  // --- STATE MANAGEMENT ---
+  const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] } | null>(null);
+  const [selectedNode, setSelectedNode] = useState<any>(null);
+  const [relationshipText, setRelationshipText] = useState<string>("");
+
+  // Search State
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+
+  // Editor State
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formData, setFormData] = useState({
+    firstName: '',
+    lastName: '',
+    gender: 'male',
+    relation: 'child'
+  });
+
+  // --- DATA FETCHING ---
+  const fetchGraphData = useCallback(async () => {
+    console.log("Fetching Graph Data...");
+    const { data: members } = await supabase.from('members').select('*');
+    const { data: connections } = await supabase.from('connections').select('*');
+    
+    if (!members || !connections) return;
+
+    const nodes = members.map((m: any) => ({
+      id: m.id,
+      user_id: m.user_id,
+      name: m.first_name + ' ' + m.last_name,
+      gender: m.gender,
+      img: m.avatar_url
+    }));
+
+    const links = connections.map((c: any) => ({
+      source: c.from_member_id,
+      target: c.to_member_id,
+      type: c.type
+    }));
+
+    setGraphData({ nodes, links });
+  }, []); // <--- Empty dependency array ensures it doesn't loop
+
+  useEffect(() => {
+    fetchGraphData();
+  }, [fetchGraphData]); // <--- Now safe to add as dependency
+
+  // --- SEARCH LOGIC ---
+  useEffect(() => {
+    if (searchQuery.trim() === "" || !graphData) {
+      setSearchResults([]);
+      return;
+    }
+    const lowerQuery = searchQuery.toLowerCase();
+    const results = graphData.nodes.filter(node => 
+      node.name.toLowerCase().includes(lowerQuery)
+    ).slice(0, 5); // Limit to top 5
+    setSearchResults(results);
+  }, [searchQuery, graphData]);
+
+  const handleSearchSelect = (node: any) => {
+    // 1. Clear Search
+    setSearchQuery("");
+    setSearchResults([]);
+
+    // 2. Fly to Node
+    if (graphRef.current) {
+      const distance = 40;
+      const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
+      graphRef.current.cameraPosition(
+        { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, 
+        node, 
+        3000
+      );
+    }
+
+    // 3. Trigger Selection Logic
+    handleNodeClick(node);
+  };
+
+  // --- LOGOUT LOGIC ---
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.refresh(); // Forces page reload to show Login screen
+  };
+
+  // --- INTERACTION: NODE CLICK ---
+  const handleNodeClick = async (node: any) => {
+    if (!node || node.x === undefined || !graphRef.current) return;
+
+    const distance = 40;
+    const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
+    graphRef.current.cameraPosition(
+      { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, 
+      node, 
+      3000
+    );
+
+    setSelectedNode(node);
+    setRelationshipText("Calculating Neural Link...");
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setRelationshipText("Authentication Signal Lost.");
+        return;
+      }
+      const myNode = graphData?.nodes.find(n => n.user_id === user.id);
+      if (myNode) {
+        const text = await findRelationship(myNode.id, node.id);
+        setRelationshipText(text);
+      } else {
+        setRelationshipText("Identity Unverified.");
+      }
+    } catch (error) {
+      console.error(error);
+      setRelationshipText("Neural Link Severed.");
+    }
+  };
+
+  const handleBackgroundClick = () => {
+    setSelectedNode(null);
+    setRelationshipText("");
+    setIsModalOpen(false);
+    if (graphRef.current) {
+      graphRef.current.cameraPosition(
+        { x: 0, y: 0, z: 400 }, 
+        { x: 0, y: 0, z: 0 },   
+        3000                    
+      );
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedNode) return;
+    setIsSubmitting(true);
+
+    const result = await addRelative(selectedNode.id, formData);
+
+    if (result.success) {
+      await fetchGraphData();
+      setIsModalOpen(false);
+      setFormData({ firstName: '', lastName: '', gender: 'male', relation: 'child' }); 
+    } else {
+      alert("Error adding relative: " + result.error);
+    }
+    setIsSubmitting(false);
+  };
+
+  // --- FACE ENGINE ---
+  const nodeThreeObject = useCallback((node: any) => {
+    const group = new THREE.Group();
+    const label = new SpriteText(node.name);
+    label.color = 'white';
+    label.textHeight = 3; 
+    
+    if (node.img) {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const size = 256; 
+      canvas.width = size; canvas.height = size;
+
+      if (ctx) {
+        const img = new Image();
+        img.crossOrigin = "Anonymous";
+        img.src = node.img;
+        img.onload = () => {
+          ctx.beginPath();
+          ctx.arc(size/2, size/2, size/2, 0, Math.PI*2);
+          ctx.closePath();
+          ctx.clip();
+          ctx.drawImage(img, 0, 0, size, size);
+          
+          const texture = new THREE.CanvasTexture(canvas);
+          texture.colorSpace = THREE.SRGBColorSpace;
+          const material = new THREE.SpriteMaterial({ map: texture });
+          const sprite = new THREE.Sprite(material);
+          sprite.scale.set(12, 12, 1); 
+          group.add(sprite);
+        };
+      }
+      label.position.set(0, -9, 0); 
+      group.add(label);
+    } else {
+      const geometry = new THREE.SphereGeometry(4, 32, 32);
+      const material = new THREE.MeshLambertMaterial({ 
+        color: node.gender === 'male' ? '#4f46e5' : '#ec4899',
+        transparent: true, opacity: 0.9
+      });
+      label.position.set(0, -6, 0);
+      group.add(new THREE.Mesh(geometry, material));
+      group.add(label);
+    }
+    return group;
+  }, []);
+
+  if (!graphData) return <div className="text-white p-10">Loading Neural Link...</div>;
+
+  return (
+    <div className="relative w-full h-screen bg-black overflow-hidden">
+      
+      {/* --- COMMAND DECK (HEADER) --- */}
+      <header className="fixed top-0 left-0 w-full z-50 flex items-center justify-between px-8 py-6 pointer-events-none">
+        
+        {/* 1. TITLE (Left) */}
+        <div className="pointer-events-auto">
+          <h1 className="text-white font-bold tracking-widest text-lg drop-shadow-md">
+            PROJECT BILAVINAKATH
+          </h1>
+          <p className="text-zinc-500 text-[10px] uppercase tracking-[0.3em]">
+            Legacy Visualization v1.0
+          </p>
+        </div>
+
+        {/* 2. SEARCH BAR (Center) */}
+        <div className="pointer-events-auto relative w-96">
+          <div className="relative group">
+            <div className="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-lg blur opacity-30 group-hover:opacity-60 transition duration-1000"></div>
+            <input 
+              type="text" 
+              placeholder="Search Member..." 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="relative w-full bg-black/80 backdrop-blur-md border border-zinc-700 text-white text-sm rounded-lg px-4 py-2 outline-none focus:border-indigo-500 transition-all placeholder-zinc-600"
+            />
+          </div>
+          
+          {/* Search Results Dropdown */}
+          {searchResults.length > 0 && (
+            <div className="absolute top-full mt-2 w-full bg-zinc-900/95 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden backdrop-blur-md">
+              {searchResults.map((node) => (
+                <button
+                  key={node.id}
+                  onClick={() => handleSearchSelect(node)}
+                  className="w-full text-left px-4 py-3 hover:bg-zinc-800 transition-colors flex items-center gap-3 group"
+                >
+                  <div className={`w-2 h-2 rounded-full ${node.gender === 'male' ? 'bg-indigo-500' : 'bg-pink-500'} group-hover:scale-125 transition-transform`}></div>
+                  <span className="text-zinc-200 text-sm font-medium">{node.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 3. DISCONNECT BUTTON (Right) */}
+        <div className="pointer-events-auto">
+          <button
+            onClick={handleLogout}
+            className="px-6 py-2 bg-black/40 backdrop-blur-md border border-red-500/30 rounded-full text-[10px] tracking-[0.2em] font-bold text-red-500 hover:text-red-400 hover:bg-red-500/10 transition-all duration-300 shadow-lg"
+          >
+            DISCONNECT
+          </button>
+        </div>
+      </header>
+
+      {/* --- 3D ENGINE --- */}
+      <ForceGraph3D
+        ref={graphRef}
+        graphData={graphData}
+        onNodeClick={handleNodeClick}
+        onBackgroundClick={handleBackgroundClick}
+        nodeThreeObjectExtend={false} 
+        nodeThreeObject={nodeThreeObject} 
+        nodeLabel="name"
+        linkColor={() => 'rgba(255,255,255,0.4)'}
+        linkWidth={1.5}
+        linkDirectionalArrowLength={3.5}
+        linkDirectionalArrowRelPos={1}
+        backgroundColor="#000000"
+        controlType="orbit"
+        onEngineStop={() => {
+            if (graphRef.current) {
+                const scene = graphRef.current.scene();
+                scene.add(new THREE.AmbientLight(0xbbbbbb));
+                scene.add(new THREE.DirectionalLight(0xffffff, 0.6));
+            }
+        }}
+      />
+
+      {/* --- HUD OVERLAY --- */}
+      {selectedNode && (
+        <div className="absolute bottom-10 left-10 z-40 p-6 bg-zinc-900/80 border border-zinc-700 rounded-xl backdrop-blur-md max-w-md shadow-2xl select-none">
+          <div className="flex items-center gap-4 mb-4">
+             {selectedNode.img ? (
+              <img src={selectedNode.img} alt="avatar" className="w-12 h-12 rounded-full object-cover border-2 border-white/20" />
+            ) : (
+              <div className={`w-12 h-12 rounded-full flex items-center justify-center ${selectedNode.gender === 'male' ? 'bg-indigo-500' : 'bg-pink-500'}`}>
+                 <span className="text-xl font-bold text-white">{selectedNode.name[0]}</span>
+              </div>
+            )}
+            <div>
+              <h2 className="text-xl font-bold text-white tracking-tight">{selectedNode.name}</h2>
+              <p className="text-zinc-400 text-xs">ID: {selectedNode.id.slice(0,8)}</p>
+            </div>
+          </div>
+          <div className="border-t border-zinc-700 pt-3 mb-3">
+            <p className="text-[10px] uppercase tracking-widest text-zinc-500 mb-1">RELATIONSHIP PROTOCOL</p>
+            <p className="text-md text-emerald-400 font-mono leading-tight">{relationshipText}</p>
+          </div>
+          
+          <button 
+            onClick={() => setIsModalOpen(true)}
+            className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold tracking-widest rounded border border-indigo-400 shadow-[0_0_15px_rgba(79,70,229,0.4)] transition-all"
+          >
+            + ADD RELATIVE
+          </button>
+        </div>
+      )}
+
+      {/* --- ADD RELATIVE MODAL --- */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <div className="w-full max-w-sm bg-zinc-900 border border-zinc-700 rounded-xl p-6 shadow-2xl relative">
+            <h3 className="text-lg font-bold text-white mb-4">Add Relative to {selectedNode?.name.split(' ')[0]}</h3>
+            
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="grid grid-cols-2 gap-2">
+                <input 
+                  type="text" placeholder="First Name" required
+                  className="bg-black border border-zinc-700 rounded p-2 text-white text-sm outline-none focus:border-indigo-500"
+                  value={formData.firstName}
+                  onChange={e => setFormData({...formData, firstName: e.target.value})}
+                />
+                <input 
+                  type="text" placeholder="Last Name" required
+                  className="bg-black border border-zinc-700 rounded p-2 text-white text-sm outline-none focus:border-indigo-500"
+                  value={formData.lastName}
+                  onChange={e => setFormData({...formData, lastName: e.target.value})}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <select 
+                  className="bg-black border border-zinc-700 rounded p-2 text-white text-sm outline-none focus:border-indigo-500"
+                  value={formData.gender}
+                  onChange={e => setFormData({...formData, gender: e.target.value})}
+                >
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                </select>
+
+                <select 
+                  className="bg-black border border-zinc-700 rounded p-2 text-white text-sm outline-none focus:border-indigo-500"
+                  value={formData.relation}
+                  onChange={e => setFormData({...formData, relation: e.target.value})}
+                >
+                  <option value="child">Child (Son/Daughter)</option>
+                  <option value="spouse">Spouse (Wife/Husband)</option>
+                  <option value="parent">Parent (Mom/Dad)</option>
+                  <option value="sibling">Sibling (Brother/Sister)</option>
+                </select>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button 
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="flex-1 py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold rounded transition"
+                >
+                  CANCEL
+                </button>
+                <button 
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded transition shadow-[0_0_10px_rgba(16,185,129,0.4)]"
+                >
+                  {isSubmitting ? 'PROCESSING...' : 'CONFIRM LINK'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
