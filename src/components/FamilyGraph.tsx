@@ -49,21 +49,29 @@ export default function FamilyGraph() {
     relation: 'child'
   });
 
-  // --- DATA FETCHING & SECURITY CHECK ---
+  // --- DATA FETCHING & DATABASE SECURITY CHECK ---
   const fetchGraphData = useCallback(async () => {
     console.log("Fetching Graph Data...");
     
-    // 1. Check Identity & Set Permissions
+    // 1. Get Current User
     const { data: { user } } = await supabase.auth.getUser();
     const currentUserId = user?.id;
-    const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
 
-    if (user && user.email === adminEmail) {
-        setIsAdmin(true);
+    // 2. CHECK DATABASE WHITELIST (Robust Security)
+    if (user?.email) {
+      const { data: adminEntry } = await supabase
+        .from('admin_whitelist')
+        .select('id')
+        .eq('email', user.email)
+        .single();
+      
+      // If row exists, user is Admin
+      setIsAdmin(!!adminEntry); 
     } else {
-        setIsAdmin(false);
+      setIsAdmin(false);
     }
 
+    // 3. Fetch Graph Data
     const { data: members } = await supabase.from('members').select('*');
     const { data: connections } = await supabase.from('connections').select('*');
 

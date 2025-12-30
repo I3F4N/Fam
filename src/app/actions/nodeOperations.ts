@@ -2,13 +2,12 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
+import { checkIsAdmin } from '@/utils/adminCheck'; 
 
-// Helper to verify Admin
+// Helper: Verify User via Database Whitelist
 async function verifyAdmin() {
-  // FIX 1: Await cookies
   const cookieStore = await cookies();
   
-  // FIX 2: Pass cookies via global headers
   const authClient = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -23,22 +22,18 @@ async function verifyAdmin() {
   );
   
   const { data: { user } } = await authClient.auth.getUser();
-  const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
-
-  if (!user || user.email !== ADMIN_EMAIL) {
-    return false;
-  }
-  return true;
+  return await checkIsAdmin(user?.email);
 }
 
-// Initialize Admin Client (Service Role)
+// Service Role Client for Writes
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
 export async function updateMember(id: string, data: { firstName: string; lastName: string; gender: string }) {
-  if (!(await verifyAdmin())) return { success: false, error: 'ACCESS DENIED: Admin only.' };
+  const isAdmin = await verifyAdmin();
+  if (!isAdmin) return { success: false, error: 'ACCESS DENIED: You are not on the Admin Whitelist.' };
 
   const { error } = await supabase
     .from('members')
@@ -54,10 +49,13 @@ export async function updateMember(id: string, data: { firstName: string; lastNa
 }
 
 export async function deleteMember(id: string) {
-  if (!(await verifyAdmin())) return { success: false, error: 'ACCESS DENIED: Admin only.' };
+  const isAdmin = await verifyAdmin();
+  if (!isAdmin) return { success: false, error: 'ACCESS DENIED: You are not on the Admin Whitelist.' };
 
+  // 1. Cascade Delete Connections
   await supabase.from('connections').delete().or(`from_member_id.eq.${id},to_member_id.eq.${id}`);
 
+  // 2. Delete Member
   const { error } = await supabase
     .from('members')
     .delete()
