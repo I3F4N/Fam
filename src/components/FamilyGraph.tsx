@@ -136,26 +136,41 @@ export default function FamilyGraph() {
     return clanIds;
   };
 
-  // --- VISUAL UPGRADE: COSMOS ---
+// --- VISUAL UPGRADE: COSMOS (Fixed for Production) ---
   useEffect(() => {
-    if (graphData && graphRef.current) {
-      const scene = graphRef.current.scene();
-      if (scene.getObjectByName('starfield')) return;
+    if (!graphData) return;
 
-      const starGeometry = new THREE.BufferGeometry();
-      const starCount = 1500;
-      const positions = new Float32Array(starCount * 3);
-      for (let i = 0; i < starCount * 3; i++) {
-        positions[i] = (Math.random() - 0.5) * 4000; 
+    // Retry logic: Keep checking for the scene every 200ms until it exists
+    const interval = setInterval(() => {
+      if (graphRef.current) {
+        const scene = graphRef.current.scene();
+        if (scene) {
+          // 1. Scene Found! Stop checking.
+          clearInterval(interval);
+          
+          // 2. Prevent duplicates
+          if (scene.getObjectByName('starfield')) return;
+
+          // 3. Create Stars
+          const starGeometry = new THREE.BufferGeometry();
+          const starCount = 1500;
+          const positions = new Float32Array(starCount * 3);
+          for (let i = 0; i < starCount * 3; i++) {
+            positions[i] = (Math.random() - 0.5) * 4000; 
+          }
+          starGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+          const starMaterial = new THREE.PointsMaterial({
+            color: 0xffffff, size: 2, sizeAttenuation: true, transparent: true, opacity: 0.8
+          });
+          const stars = new THREE.Points(starGeometry, starMaterial);
+          stars.name = 'starfield';
+          scene.add(stars);
+        }
       }
-      starGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      const starMaterial = new THREE.PointsMaterial({
-        color: 0xffffff, size: 2, sizeAttenuation: true, transparent: true, opacity: 0.8
-      });
-      const stars = new THREE.Points(starGeometry, starMaterial);
-      stars.name = 'starfield';
-      scene.add(stars);
-    }
+    }, 200); // Check every 200ms
+
+    // Cleanup: Stop checking if component unmounts
+    return () => clearInterval(interval);
   }, [graphData]);
 
   // --- SEARCH & INTERACTION ---
