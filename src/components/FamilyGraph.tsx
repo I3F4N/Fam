@@ -8,6 +8,7 @@ import SpriteText from 'three-spritetext';
 import * as THREE from 'three'; 
 import { findRelationship } from '@/utils/relationshipCalculator'; 
 import { addRelative } from '@/app/actions/addRelative'; 
+import { updateMember, deleteMember } from '@/app/actions/nodeOperations'; // <--- NEW IMPORTS
 
 // 1. Dynamic Import
 const ForceGraph3D = dynamic(() => import('react-force-graph-3d'), {
@@ -26,14 +27,17 @@ export default function FamilyGraph() {
   
   // --- STATE ---
   const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] } | null>(null);
-  const [clanSet, setClanSet] = useState<Set<string>>(new Set()); // <--- NEW: Stores IDs of the Bloodline
+  const [clanSet, setClanSet] = useState<Set<string>>(new Set());
   
   // HUD & UI State
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [relationshipText, setRelationshipText] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  
+  // Editor State
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<'add' | 'edit'>('add'); // <--- NEW STATE
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     firstName: '',
@@ -53,26 +57,24 @@ export default function FamilyGraph() {
 
     if (!members || !connections) return;
 
-    // 1. Map Nodes
     const nodes = members.map((m: any) => ({
       id: m.id,
       user_id: m.user_id,
       name: m.first_name + ' ' + m.last_name,
+      firstName: m.first_name, // Store for Edit Form
+      lastName: m.last_name,   // Store for Edit Form
       gender: m.gender,
       img: m.avatar_url
     }));
 
-    // 2. Map Links
     const links = connections.map((c: any) => ({
       source: c.from_member_id,
       target: c.to_member_id,
       type: c.type
     }));
 
-    // 3. CALCULATE CLAN MEMBERS (The Bloodline Algorithm)
-    // Find the "Root" (Logged in user)
+    // CALCULATE CLAN MEMBERS
     const rootNode = nodes.find((n: any) => n.user_id === currentUserId);
-    
     if (rootNode) {
         const calculatedClan = calculateClanMembers(nodes, links, rootNode.id);
         setClanSet(calculatedClan);
@@ -85,14 +87,11 @@ export default function FamilyGraph() {
     fetchGraphData();
   }, [fetchGraphData]);
 
-
-  // --- THE CLAN LOGIC (Recursive Engine) ---
+  // --- THE CLAN LOGIC ---
   const calculateClanMembers = (nodes: any[], links: any[], rootId: string) => {
     const clanIds = new Set<string>();
-    
-    // Helper: Build Adjacency List for fast traversal
-    const parentMap: Record<string, string[]> = {}; // child -> [parents]
-    const childrenMap: Record<string, string[]> = {}; // parent -> [children]
+    const parentMap: Record<string, string[]> = {};
+    const childrenMap: Record<string, string[]> = {};
     const nodeMap: Record<string, any> = {};
 
     nodes.forEach((n: any) => { nodeMap[n.id] = n; });
@@ -100,54 +99,40 @@ export default function FamilyGraph() {
         if (l.type === 'parent_of') {
             if (!childrenMap[l.source]) childrenMap[l.source] = [];
             childrenMap[l.source].push(l.target);
-
             if (!parentMap[l.target]) parentMap[l.target] = [];
             parentMap[l.target].push(l.source);
         }
     });
 
-    // TRAVERSAL 1: CLIMB THE MOUNTAIN (Find all Fathers)
-    // Start at root, go UP as long as parent is Male.
     const clanFathers = new Set<string>();
     const queueUp = [rootId];
-    
     while (queueUp.length > 0) {
         const currId = queueUp.shift()!;
-        clanFathers.add(currId); // Add self/father to the "Patriarch List"
-
+        clanFathers.add(currId); 
         const parents = parentMap[currId] || [];
         parents.forEach(pid => {
             const parentNode = nodeMap[pid];
             if (parentNode && parentNode.gender === 'male') {
-                queueUp.push(pid); // Continue climbing up the father line
+                queueUp.push(pid);
             }
         });
     }
 
-    // TRAVERSAL 2: DESCEND THE MOUNTAIN (Propagate Bloodline)
-    // Start from every Clan Father, go DOWN. 
-    // If child is Male -> He continues the bloodline (add to queue).
-    // If child is Female -> She is IN the clan, but does NOT pass it on (don't add to queue).
     const queueDown = Array.from(clanFathers);
-    
     while (queueDown.length > 0) {
         const currId = queueDown.shift()!;
-        clanIds.add(currId); // Mark as GOLD
-
+        clanIds.add(currId); 
         const children = childrenMap[currId] || [];
         children.forEach(childId => {
             if (!clanIds.has(childId)) {
-                clanIds.add(childId); // Add the child (Son or Daughter)
-                
+                clanIds.add(childId);
                 const childNode = nodeMap[childId];
-                // Only Sons continue the name/clan traversal
                 if (childNode && childNode.gender === 'male') {
                     queueDown.push(childId);
                 }
             }
         });
     }
-
     return clanIds;
   };
 
@@ -223,15 +208,68 @@ export default function FamilyGraph() {
     }
   };
 
+  // --- HANDLER: OPEN ADD MODAL ---
+  const handleOpenAdd = () => {
+    setModalMode('add');
+    setFormData({ firstName: '', lastName: '', gender: 'male', relation: 'child' });
+    setIsModalOpen(true);
+  };
+
+  // --- HANDLER: OPEN EDIT MODAL ---
+  const handleOpenEdit = () => {
+    if (!selectedNode) return;
+    setModalMode('edit');
+    // Pre-fill form
+    setFormData({ 
+        firstName: selectedNode.firstName, 
+        lastName: selectedNode.lastName, 
+        gender: selectedNode.gender, 
+        relation: 'child' // Unused in edit mode
+    });
+    setIsModalOpen(true);
+  };
+
+  // --- HANDLER: DELETE ---
+  const handleDelete = async () => {
+    if (!selectedNode) return;
+    if (window.confirm(`Are you sure you want to permanently delete ${selectedNode.name}?`)) {
+        const result = await deleteMember(selectedNode.id);
+        if (result.success) {
+            setSelectedNode(null); // Close HUD
+            await fetchGraphData(); // Refresh Graph
+        } else {
+            alert("Error deleting member: " + result.error);
+        }
+    }
+  };
+
+  // --- HANDLER: SUBMIT FORM (ADD OR EDIT) ---
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedNode) return;
     setIsSubmitting(true);
-    const result = await addRelative(selectedNode.id, formData);
+
+    let result;
+    if (modalMode === 'add') {
+        result = await addRelative(selectedNode.id, formData);
+    } else {
+        result = await updateMember(selectedNode.id, formData);
+    }
+
     if (result.success) {
       await fetchGraphData();
       setIsModalOpen(false);
-      setFormData({ firstName: '', lastName: '', gender: 'male', relation: 'child' }); 
+      // If we edited the current node, we should update the HUD title locally or just close/reopen
+      if (modalMode === 'edit') {
+         // Quick fix: Update selected node name visually for immediate feedback
+         setSelectedNode({
+             ...selectedNode,
+             name: `${formData.firstName} ${formData.lastName}`,
+             firstName: formData.firstName,
+             lastName: formData.lastName,
+             gender: formData.gender
+         });
+      }
     } else { alert("Error: " + result.error); }
     setIsSubmitting(false);
   };
@@ -266,7 +304,6 @@ export default function FamilyGraph() {
           ctx.clip();
           ctx.drawImage(img, 0, 0, size, size);
           
-          // Add Gold/Blue Border to Avatar
           ctx.lineWidth = 15;
           ctx.strokeStyle = isClanMember ? '#FFD700' : '#6366f1';
           ctx.stroke();
@@ -285,25 +322,14 @@ export default function FamilyGraph() {
       let material;
 
       if (isClanMember) {
-        // GOLD: Shiny Metal
         material = new THREE.MeshPhysicalMaterial({ 
           color: 0xFFD700,
-          roughness: 0.2,
-          metalness: 1.0,
-          emissive: 0xaa6c39, // Warm glow
-          emissiveIntensity: 0.2,
-          clearcoat: 1.0
+          roughness: 0.2, metalness: 1.0, emissive: 0xaa6c39, emissiveIntensity: 0.2, clearcoat: 1.0
         });
       } else {
-        // ALLY: Blue Glass
         material = new THREE.MeshPhysicalMaterial({ 
           color: 0x6366f1,
-          roughness: 0,
-          metalness: 0.1,
-          transmission: 0.6, // Glass-like transparency
-          thickness: 1.5,
-          emissive: 0x6366f1,
-          emissiveIntensity: 0.2
+          roughness: 0, metalness: 0.1, transmission: 0.6, thickness: 1.5, emissive: 0x6366f1, emissiveIntensity: 0.2
         });
       }
 
@@ -311,18 +337,18 @@ export default function FamilyGraph() {
       group.add(sphere);
     }
     
-    // 4. Gender Indicator (Floating Ring for Females)
+    // 4. Gender Indicator
     if (node.gender === 'female') {
-        const ringGeo = new THREE.TorusGeometry(5, 0.1, 8, 50); // Thin ring
+        const ringGeo = new THREE.TorusGeometry(5, 0.1, 8, 50); 
         const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.6, transparent: true });
         const ring = new THREE.Mesh(ringGeo, ringMat);
-        ring.rotation.x = Math.PI / 2; // Flat halo
+        ring.rotation.x = Math.PI / 2; 
         group.add(ring);
     }
 
     group.add(label);
     return group;
-  }, [clanSet]); // Re-render when clan set is calculated
+  }, [clanSet]); 
 
   if (!graphData) return <div className="text-white p-10">Loading Neural Link...</div>;
 
@@ -390,7 +416,7 @@ export default function FamilyGraph() {
         }}
       />
 
-      {/* LEGEND (Bottom Right) */}
+      {/* LEGEND */}
       <div className="absolute bottom-10 right-10 p-4 bg-black/40 backdrop-blur-md border border-white/10 rounded-lg pointer-events-none select-none">
         <h4 className="text-[10px] text-zinc-500 uppercase tracking-widest mb-3 border-b border-white/10 pb-2">Index</h4>
         <div className="flex items-center gap-3 mb-2">
@@ -403,7 +429,7 @@ export default function FamilyGraph() {
         </div>
       </div>
 
-      {/* HUD & MODAL (Existing) */}
+      {/* HUD & MODAL */}
       {selectedNode && (
         <div className="absolute bottom-10 left-10 z-40 p-6 bg-zinc-900/80 border border-zinc-700 rounded-xl backdrop-blur-md max-w-md shadow-2xl select-none">
           <div className="flex items-center gap-4 mb-4">
@@ -414,8 +440,13 @@ export default function FamilyGraph() {
                  <span className="text-xl font-bold text-white">{selectedNode.name[0]}</span>
               </div>
             )}
-            <div>
-              <h2 className="text-xl font-bold text-white tracking-tight">{selectedNode.name}</h2>
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                  <h2 className="text-xl font-bold text-white tracking-tight">{selectedNode.name}</h2>
+                  {/* ADMIN ACTIONS */}
+                  <button onClick={handleOpenEdit} className="text-zinc-500 hover:text-white transition" title="Edit Profile">✏️</button>
+                  <button onClick={handleDelete} className="text-zinc-500 hover:text-red-500 transition" title="Delete Member">🗑️</button>
+              </div>
               <p className="text-zinc-400 text-xs">ID: {selectedNode.id.slice(0,8)}</p>
             </div>
           </div>
@@ -423,30 +454,41 @@ export default function FamilyGraph() {
             <p className="text-[10px] uppercase tracking-widest text-zinc-500 mb-1">RELATIONSHIP PROTOCOL</p>
             <p className="text-md text-emerald-400 font-mono leading-tight">{relationshipText}</p>
           </div>
-          <button onClick={() => setIsModalOpen(true)} className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold tracking-widest rounded border border-indigo-400 shadow-[0_0_15px_rgba(79,70,229,0.4)] transition-all">+ ADD RELATIVE</button>
+          <button onClick={handleOpenAdd} className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold tracking-widest rounded border border-indigo-400 shadow-[0_0_15px_rgba(79,70,229,0.4)] transition-all">+ ADD RELATIVE</button>
         </div>
       )}
 
+      {/* SHARED MODAL (ADD / EDIT) */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
           <div className="w-full max-w-sm bg-zinc-900 border border-zinc-700 rounded-xl p-6 shadow-2xl relative">
-            <h3 className="text-lg font-bold text-white mb-4">Add Relative to {selectedNode?.name.split(' ')[0]}</h3>
+            <h3 className="text-lg font-bold text-white mb-4">
+                {modalMode === 'add' ? `Add Relative to ${selectedNode?.firstName}` : `Edit Profile: ${selectedNode?.firstName}`}
+            </h3>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid grid-cols-2 gap-2">
                 <input type="text" placeholder="First Name" required className="bg-black border border-zinc-700 rounded p-2 text-white text-sm outline-none focus:border-indigo-500" value={formData.firstName} onChange={e => setFormData({...formData, firstName: e.target.value})} />
                 <input type="text" placeholder="Last Name" required className="bg-black border border-zinc-700 rounded p-2 text-white text-sm outline-none focus:border-indigo-500" value={formData.lastName} onChange={e => setFormData({...formData, lastName: e.target.value})} />
               </div>
+              
               <div className="grid grid-cols-2 gap-2">
                 <select className="bg-black border border-zinc-700 rounded p-2 text-white text-sm outline-none focus:border-indigo-500" value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})}>
                   <option value="male">Male</option><option value="female">Female</option>
                 </select>
-                <select className="bg-black border border-zinc-700 rounded p-2 text-white text-sm outline-none focus:border-indigo-500" value={formData.relation} onChange={e => setFormData({...formData, relation: e.target.value})}>
-                  <option value="child">Child (Son/Daughter)</option><option value="spouse">Spouse (Wife/Husband)</option><option value="parent">Parent (Mom/Dad)</option><option value="sibling">Sibling (Brother/Sister)</option>
-                </select>
+                
+                {/* HIDE RELATION IN EDIT MODE */}
+                {modalMode === 'add' && (
+                    <select className="bg-black border border-zinc-700 rounded p-2 text-white text-sm outline-none focus:border-indigo-500" value={formData.relation} onChange={e => setFormData({...formData, relation: e.target.value})}>
+                    <option value="child">Child (Son/Daughter)</option><option value="spouse">Spouse (Wife/Husband)</option><option value="parent">Parent (Mom/Dad)</option><option value="sibling">Sibling (Brother/Sister)</option>
+                    </select>
+                )}
               </div>
+
               <div className="flex gap-2 pt-2">
                 <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold rounded transition">CANCEL</button>
-                <button type="submit" disabled={isSubmitting} className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded transition shadow-[0_0_10px_rgba(16,185,129,0.4)]">{isSubmitting ? 'PROCESSING...' : 'CONFIRM LINK'}</button>
+                <button type="submit" disabled={isSubmitting} className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded transition shadow-[0_0_10px_rgba(16,185,129,0.4)]">
+                    {isSubmitting ? 'PROCESSING...' : (modalMode === 'add' ? 'CONFIRM LINK' : 'SAVE CHANGES')}
+                </button>
               </div>
             </form>
           </div>
