@@ -2,22 +2,21 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
+import { checkIsAdmin } from '@/utils/adminCheck'; // Ensure this path is correct for your project
 
 export async function addRelative(
   originId: string, 
   data: { firstName: string; lastName: string; gender: string; relation: string }
 ) {
-  // FIX 1: Await the cookies() call (Required for Next.js 15)
+  // FIX 1: Await the cookies() call (Next.js 15 Requirement)
   const cookieStore = await cookies();
 
-  // FIX 2: Pass cookies via 'global.headers' so supabase-js can find the session
+  // FIX 2: Correctly pass cookies to Supabase via global headers
   const authClient = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
-      auth: {
-        persistSession: false, // Server actions don't need persistent storage
-      },
+      auth: { persistSession: false },
       global: {
         headers: {
           cookie: cookieStore.toString(),
@@ -26,16 +25,17 @@ export async function addRelative(
     }
   );
 
-  // 2. Security Check
+  // 2. Security Check (Database Whitelist)
   const { data: { user } } = await authClient.auth.getUser();
-  const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
+  // Ensure checkIsAdmin handles undefined safely
+  const isAdmin = await checkIsAdmin(user?.email ?? undefined);
 
-  if (!user || user.email !== ADMIN_EMAIL) {
-    console.error(`🚨 Security Alert: Unauthorized write attempt by ${user?.email || 'Unknown'}`);
-    return { success: false, error: 'ACCESS DENIED: You do not have Admin privileges.' };
+  if (!isAdmin) {
+    console.error(`🚨 Unauthorized Access: ${user?.email}`);
+    return { success: false, error: 'ACCESS DENIED: You are not on the Admin Whitelist.' };
   }
 
-  // 3. Initialize Admin Client (Service Role)
+  // 3. Initialize Write Client (Service Role)
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -43,7 +43,7 @@ export async function addRelative(
 
   console.log("⚡ Action: Adding Relative...", data);
 
-  // --- LOGIC: CREATE MEMBER ---
+  // --- MEMBER CREATION ---
   const { data: newMember, error: memberError } = await supabase
     .from('members')
     .insert({
@@ -57,7 +57,7 @@ export async function addRelative(
 
   if (memberError || !newMember) return { success: false, error: memberError?.message };
 
-  // --- LOGIC: CREATE CONNECTIONS ---
+  // --- CONNECTION LOGIC ---
   const linksToCreate = [];
 
   if (data.relation === 'child') {
@@ -92,9 +92,7 @@ export async function addRelative(
 
   const { error: linkError } = await supabase.from('connections').insert(linksToCreate);
 
-  if (linkError) {
-    return { success: false, error: linkError.message };
-  }
+  if (linkError) return { success: false, error: linkError.message };
 
   return { success: true };
 }
