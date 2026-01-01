@@ -586,10 +586,6 @@ export default function FamilyGraph() {
         </span>
       </div>
     </div>
-        <div className="pointer-events-auto text-center md:text-left">
-          <h1 className="text-white font-bold tracking-widest text-lg drop-shadow-md">PROJECT BILAVINAKATH</h1>
-          <p className="text-zinc-500 text-[10px] uppercase tracking-[0.3em]">Bloodline Visualization v19.0 (Grand Gallery)</p>
-        </div>
         <div className="pointer-events-auto relative w-full md:w-96">
           <div className="relative group">
             <div className="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-lg blur opacity-30 group-hover:opacity-60 transition duration-1000"></div>
