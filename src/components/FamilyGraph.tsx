@@ -1,12 +1,11 @@
 'use client';
 
 /**
- * FAMILY GRAPH COMPONENT (v19.0: Grand Gallery)
- * ---------------------------------------------
- * Architecture: Wide Cylindrical Projection (270deg)
- * Logic: Recursive Center Algorithm + Deep Zipper (+/- 40)
- * UX: Ghost Labels (Always Visible, Contextual Opacity)
- * Visuals: Neon Cyberpunk + High Contrast Beams
+ * FAMILY GRAPH COMPONENT (v21.0: Spectral Cylinder)
+ * -------------------------------------------------
+ * Architecture: Recursive Tree mapped to Fixed Cylinder
+ * Visuals: Generation-based Spectral Color Coding
+ * UX: Ghost Labels (0.6 -> 1.0) + O(1) Interaction
  */
 
 import { useEffect, useState, useRef, useCallback } from 'react';
@@ -25,6 +24,10 @@ import { findRelationship } from '@/utils/relationshipCalculator';
 import { addRelative } from '@/app/actions/addRelative'; 
 import { updateMember, deleteMember } from '@/app/actions/nodeOperations';
 
+// --- CONFIGURATION ---
+const GEN_COLORS = ['#FFD700', '#FF8C00', '#FF1493', '#9400D3', '#4169E1', '#00FFFF'];
+const getGenColor = (level: number) => GEN_COLORS[level % GEN_COLORS.length] || '#FFFFFF';
+
 // --- TYPES ---
 interface FamilyNode {
   id: string;
@@ -38,6 +41,7 @@ interface FamilyNode {
   isDeceased: boolean;
   val: number;   
   level: number; 
+  neighbors?: Set<string>; // Optimization
   // Deterministic Locks
   fx?: number; 
   fy?: number; 
@@ -45,8 +49,7 @@ interface FamilyNode {
   x?: number;
   y?: number;
   z?: number;
-  // Calculation Temp props
-  rawX?: number;
+  rawX?: number; // Internal calculation
 }
 
 interface FamilyLink {
@@ -78,10 +81,9 @@ export default function FamilyGraph() {
   const [clanSet, setClanSet] = useState<Set<string>>(new Set());
   const [isAdmin, setIsAdmin] = useState(false);
 
-  // Focus Mode State
+  // Focus Mode
   const [hoverNode, setHoverNode] = useState<FamilyNode | null>(null);
-  const [highlightNodes, setHighlightNodes] = useState<Set<string>>(new Set());
-  const [highlightLinks, setHighlightLinks] = useState<Set<FamilyLink>>(new Set());
+  // Derived state for visuals handled inside renderer for performance
 
   // UI State
   const [selectedNode, setSelectedNode] = useState<FamilyNode | null>(null);
@@ -167,7 +169,7 @@ export default function FamilyGraph() {
   };
 
   // ---------------------------------------------------------------------------
-  // 2. DATA FETCHING & GRAND GALLERY LAYOUT
+  // 2. DATA FETCHING & SPECTRAL CYLINDER LAYOUT
   // ---------------------------------------------------------------------------
   const fetchGraphData = useCallback(async () => {
     try {
@@ -201,26 +203,45 @@ export default function FamilyGraph() {
         type: c.type
       }));
 
+      // 1. Topology
       const { clanIds, generationMap, spouseMap } = calculateTopology(rawNodes, links);
       setClanSet(clanIds);
 
-      // --- NODE SIZING ---
+      // 2. Neighbor Optimization (O(1) Lag Fix)
+      const neighborMap: Record<string, Set<string>> = {};
+      links.forEach((link: any) => {
+          const s = link.source;
+          const t = link.target;
+          if (!neighborMap[s]) neighborMap[s] = new Set();
+          if (!neighborMap[t]) neighborMap[t] = new Set();
+          neighborMap[s].add(t);
+          neighborMap[t].add(s);
+      });
+
+      // 3. Node Processing
       const processedNodes = rawNodes.map((n: any) => {
           const gen = generationMap[n.id] || 0;
           const isClan = clanIds.has(n.id);
           let sizeVal = 15; 
           if (isClan) {
-              if (gen === 0) sizeVal = 40;      // Roots
-              else if (gen === 1) sizeVal = 25; // Parents
-              else sizeVal = 15;                // Kids
+              if (gen === 0) sizeVal = 40;      
+              else if (gen === 1) sizeVal = 25; 
+              else sizeVal = 15;                
           } 
-          return { ...n, val: sizeVal, level: gen };
+          return { 
+              ...n, 
+              val: sizeVal, 
+              level: gen,
+              neighbors: neighborMap[n.id] || new Set()
+          };
       });
 
-      // --- THE GRAND GALLERY LAYOUT ---
+      // --- SPECTRAL CYLINDER ALGORITHM ---
+      
       const bloodlineNodes = processedNodes.filter(n => clanIds.has(n.id));
       const spouseNodes = processedNodes.filter(n => !clanIds.has(n.id));
 
+      // A. Build Hierarchy for Recursion
       const hierarchy: Record<string, any[]> = {}; 
       bloodlineNodes.forEach(n => {
           const parentLink = links.find(l => l.target === n.id && l.type === 'parent_of' && clanIds.has(l.source));
@@ -228,8 +249,10 @@ export default function FamilyGraph() {
           if (!hierarchy[parentId]) hierarchy[parentId] = [];
           hierarchy[parentId].push(n);
       });
+      // Sort children by ID/Age for deterministic order
       Object.values(hierarchy).forEach(kids => kids.sort((a,b) => a.id.localeCompare(b.id)));
 
+      // B. Recursive Placement (The Crystal Logic)
       let leafIndex = 0;
       const visited = new Set<string>();
 
@@ -253,53 +276,37 @@ export default function FamilyGraph() {
       const roots = bloodlineNodes.filter(n => n.level === 0);
       roots.forEach(root => assignPositions(root.id));
 
-      const maxX = Math.max(leafIndex, 1); 
-
-      // 4. APPLY "GRAND GALLERY" PROJECTION
-      const levelGroups: Record<number, FamilyNode[]> = {};
+      // C. Projection to Cylinder (Radius 500)
+      const maxX = Math.max(leafIndex, 1);
+      
       bloodlineNodes.forEach(node => {
-          if(!levelGroups[node.level]) levelGroups[node.level] = [];
-          levelGroups[node.level].push(node);
+          if (node.rawX !== undefined) {
+              // Map to 270 degrees (leaving a gap in the back)
+              const angle = ((node.rawX / maxX) - 0.5) * (Math.PI * 1.5); 
+              const radius = 500; // Fixed Cylinder Radius
+
+              node.fx = Math.sin(angle) * radius; 
+              node.fz = Math.cos(angle) * radius; 
+              node.fy = -node.level * 250; // Vertical Step
+          }
       });
 
-      Object.values(levelGroups).forEach(group => group.sort((a,b) => (a.rawX || 0) - (b.rawX || 0)));
-
-      Object.keys(levelGroups).forEach(levelKey => {
-          const lvl = parseInt(levelKey);
-          const nodesInLevel = levelGroups[lvl];
-
-          nodesInLevel.forEach((node, i) => {
-              if (node.rawX !== undefined) {
-                  // WIDE ARC: Spread across 270 degrees (PI * 1.5)
-                  const angle = ((node.rawX / maxX) - 0.5) * (Math.PI * 1.5); 
-                  const radius = 1200 - (node.level * 50); 
-
-                  node.fx = Math.sin(angle) * radius; 
-                  node.fz = Math.cos(angle) * radius; 
-                  
-                  // DEEP ZIPPER: +/- 40 vertical offset
-                  const zipperOffset = (i % 2 === 0) ? -40 : 40;
-                  node.fy = (-node.level * 250) + zipperOffset;        
-              }
-          });
-      });
-
-      // 5. ATTACH SPOUSES
+      // D. Attach Spouses (Tangent Offset)
       spouseNodes.forEach(spouse => {
           const partnerId = spouseMap[spouse.id];
           const partner = bloodlineNodes.find(n => n.id === partnerId);
           
           if (partner && partner.rawX !== undefined) {
-              const offsetAngle = 0.04; 
+              const offsetAngle = 0.08; // Small shift along the curve
               const angle = ((partner.rawX / maxX) - 0.5) * (Math.PI * 1.5) + offsetAngle;
-              const radius = 1200 - (partner.level * 50);
+              const radius = 500;
 
               spouse.fx = Math.sin(angle) * radius;
               spouse.fz = Math.cos(angle) * radius;
               spouse.fy = partner.fy; 
               spouse.level = partner.level;
           } else {
-              spouse.fx = 0; spouse.fy = -spouse.level * 250; spouse.fz = 1200;
+              spouse.fx = 0; spouse.fy = -spouse.level * 250; spouse.fz = 500;
           }
       });
 
@@ -315,25 +322,7 @@ export default function FamilyGraph() {
   // 3. INTERACTION ENGINE
   // ---------------------------------------------------------------------------
   const handleNodeHover = (node: any) => {
-    setHoverNode(node || null);
-    const newHighlights = new Set<string>();
-    const newLinkHighlights = new Set<FamilyLink>();
-
-    if (node) {
-      newHighlights.add(node.id);
-      graphData?.links.forEach(link => {
-        const sourceId = typeof link.source === 'object' ? (link.source as FamilyNode).id : link.source;
-        const targetId = typeof link.target === 'object' ? (link.target as FamilyNode).id : link.target;
-        
-        if (sourceId === node.id || targetId === node.id) {
-          newHighlights.add(sourceId as string);
-          newHighlights.add(targetId as string);
-          newLinkHighlights.add(link);
-        }
-      });
-    }
-    setHighlightNodes(newHighlights);
-    setHighlightLinks(newLinkHighlights);
+    setHoverNode(node || null); 
   };
 
   // ---------------------------------------------------------------------------
@@ -341,6 +330,7 @@ export default function FamilyGraph() {
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (graphRef.current) {
+        // No forces needed for positions (locked fx/fy), just link curvature
         graphRef.current.d3Force('link').distance((link: any) => {
             return link.type === 'married_to' ? 1 : 100;
         });
@@ -360,9 +350,9 @@ export default function FamilyGraph() {
       const targetZ = node.fz ?? node.z;
 
       graphRef.current.cameraPosition(
-        { x: targetX, y: targetY + 100, z: targetZ + 500 }, 
+        { x: targetX, y: targetY + 100, z: targetZ + 600 }, 
         { x: targetX, y: targetY, z: targetZ }, 
-        3000
+        1500
       );
     }
   }, []);
@@ -409,35 +399,43 @@ export default function FamilyGraph() {
   const nodeThreeObject = useCallback((node: any) => {
     const group = new THREE.Group();
     
-    // VISIBILITY LOGIC:
+    // VISIBILITY LOGIC
     const isGlobalHover = hoverNode !== null;
-    const isHighlighted = highlightNodes.has(node.id);
+    let opacityLevel = 0.6; // Default Ghost Mode
+    let isHighlighted = false;
+
+    if (isGlobalHover) {
+        if (node.id === hoverNode.id || (hoverNode.neighbors && hoverNode.neighbors.has(node.id))) {
+            isHighlighted = true;
+            opacityLevel = 1.0; // Focus
+        } else {
+            opacityLevel = 0.1; // Dim irrelevant
+        }
+    } else {
+        // No hover: Everyone is Ghost (0.6)
+        opacityLevel = 0.6;
+    }
+
     const isDeceased = node.isDeceased;
-    const isClanMember = clanSet.has(node.id);
     
-    // GHOST LABELS:
-    // If Highlighted or Important -> 1.0
-    // Else -> 0.4 (Ghost)
-    const isTargeted = isHighlighted || (!isGlobalHover && node.level <= 1);
-    const opacityLevel = isTargeted ? 1 : 0.4;
+    // COLOR CODING: Spectral by Generation
+    const genColor = getGenColor(node.level);
+    const primaryColor = isDeceased ? '#E5E4E2' : genColor;
 
     // LABEL (Always Rendered, Opacity Controlled)
     const cleanName = node.name.replace(/Late\.?\s*/i, '');
     const label = new SpriteText(cleanName);
-    label.color = `rgba(255,255,255,${opacityLevel})`; // White with alpha
-    label.backgroundColor = `rgba(0,0,0,${0.6 * opacityLevel})`; // Background fade
+    label.color = `rgba(255,255,255,${isHighlighted ? 1 : 0.7})`; 
+    label.backgroundColor = `rgba(0,0,0,${0.5 * opacityLevel})`; 
     label.padding = 6;
     label.borderRadius = 8;
-    label.textHeight = Math.max(4, node.val / 4); 
+    // Scale up on Highlight
+    label.textHeight = isHighlighted ? (node.val / 3) : (node.val / 4); 
     const baseRadius = node.val;
     label.position.set(0, -(baseRadius + (node.val/2)), 0); 
     group.add(label);
 
-    let primaryColor;
-    if (isDeceased) primaryColor = '#E5E4E2'; 
-    else if (isClanMember) primaryColor = '#FFD700'; 
-    else primaryColor = '#6366f1'; 
-
+    // GEOMETRY
     if (node.img) {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
@@ -453,7 +451,6 @@ export default function FamilyGraph() {
           ctx.filter = 'none'; ctx.lineWidth = 15; ctx.strokeStyle = primaryColor; ctx.stroke();
           const texture = new THREE.CanvasTexture(canvas);
           texture.colorSpace = THREE.SRGBColorSpace;
-          // Apply opacity to avatar as well
           const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: isDeceased ? 0.85 * opacityLevel : opacityLevel });
           const sprite = new THREE.Sprite(spriteMat);
           const scale = baseRadius * 2.5; sprite.scale.set(scale, scale, 1); group.add(sprite);
@@ -468,6 +465,7 @@ export default function FamilyGraph() {
       group.add(sphere);
     }
     
+    // RINGS
     if (opacityLevel > 0.1) {
         if (isDeceased) {
             const haloGeo = new THREE.TorusGeometry(baseRadius + (baseRadius * 0.3), 1, 16, 100);
@@ -483,7 +481,7 @@ export default function FamilyGraph() {
     }
 
     return group;
-  }, [clanSet, hoverNode, highlightNodes]); 
+  }, [clanSet, hoverNode]); 
 
   // --- HANDLERS ---
   useEffect(() => {
@@ -574,18 +572,10 @@ export default function FamilyGraph() {
       
       {/* HEADER */}
       <header className="fixed top-0 left-0 w-full z-50 flex flex-col md:flex-row items-center justify-between px-4 py-4 md:px-8 md:py-6 pointer-events-none gap-4">
-    <div className="pointer-events-auto text-center md:text-left">
-      <h1 className="text-white font-bold tracking-widest text-lg drop-shadow-md">PROJECT BILAVINAKATH</h1>
-      <div className="flex items-center gap-3">
-        <p className="text-zinc-500 text-[10px] uppercase tracking-[0.3em]">
-            Bloodline Visualization v18.0
-        </p>
-        {/* THE NEW COUNTER */}
-        <span className="px-2 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-[10px] text-emerald-400 font-mono">
-            {graphData ? graphData.nodes.length : 0} MEMBERS
-        </span>
-      </div>
-    </div>
+        <div className="pointer-events-auto text-center md:text-left">
+          <h1 className="text-white font-bold tracking-widest text-lg drop-shadow-md">PROJECT BILAVINAKATH</h1>
+          <p className="text-zinc-500 text-[10px] uppercase tracking-[0.3em]">Bloodline Visualization v21.0 (Spectral Cylinder)</p>
+        </div>
         <div className="pointer-events-auto relative w-full md:w-96">
           <div className="relative group">
             <div className="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-lg blur opacity-30 group-hover:opacity-60 transition duration-1000"></div>
@@ -627,29 +617,43 @@ export default function FamilyGraph() {
         nodeLabel={() => ""}
         nodeVal="val"
         
-        // VISUAL UPDATE: HIGH CONTRAST NEON POLISH
+        // VISUAL UPDATE: SPECTRAL LINK COLORS
         linkCurvature={0.25}
         linkCurveRotation={0.5}
         
         linkColor={(link: any) => {
-            const isHidden = hoverNode && !highlightLinks.has(link);
-            const alpha = isHidden ? 0.15 : (link.type === 'married_to' ? 1 : 0.9);
-            return link.type === 'married_to' 
-                ? `rgba(236, 72, 153, ${alpha})` // Neon Pink
-                : `rgba(255, 215, 0, ${alpha})`;  // Solid Gold
+            const isHovered = hoverNode && (
+                link.source.id === hoverNode.id || link.target.id === hoverNode.id
+            );
+            const isHidden = hoverNode && !isHovered;
+            const alpha = isHidden ? 0.1 : (link.type === 'married_to' ? 1 : 0.8);
+            
+            // INHERIT COLOR FROM SOURCE (Lineage Flow)
+            if (link.type === 'married_to') return `rgba(236, 72, 153, ${alpha})`; // Neon Pink
+            
+            const sourceColor = getGenColor(link.source.level);
+            // Convert Hex to RGBA manually or just return Hex if alpha is 1
+            // Simple approach: Use hex if visible, fade if hidden logic needed
+            return sourceColor; 
         }}
         
         linkWidth={(link: any) => {
-            if (highlightLinks.has(link)) return 8; 
-            return link.type === 'married_to' ? 6 : 2.5; 
+            const isHovered = hoverNode && (
+                link.source.id === hoverNode.id || link.target.id === hoverNode.id
+            );
+            if (isHovered) return 8; 
+            // Thicker Parent Links for Visibility
+            return link.type === 'married_to' ? 6 : 2; 
         }}
         
-        linkDirectionalParticles={(link: any) => highlightLinks.has(link) ? 4 : 0}
+        linkDirectionalParticles={(link: any) => {
+             const isHovered = hoverNode && (
+                link.source.id === hoverNode.id || link.target.id === hoverNode.id
+            );
+            return isHovered ? 4 : 0;
+        }}
         linkDirectionalParticleWidth={4}
         linkDirectionalParticleSpeed={0.01}
-        
-        // CRITICAL FIX: Velocity Decay is a PROP
-        d3VelocityDecay={0.5}
         
         backgroundColor="#000000"
         controlType="orbit"
@@ -669,12 +673,12 @@ export default function FamilyGraph() {
       <div className="absolute bottom-4 right-4 md:bottom-10 md:right-10 scale-75 origin-bottom-right md:scale-100 p-4 bg-black/40 backdrop-blur-md border border-white/10 rounded-lg pointer-events-none select-none z-0">
         <h4 className="text-[10px] text-zinc-500 uppercase tracking-widest mb-3 border-b border-white/10 pb-2">Index</h4>
         <div className="flex items-center gap-3 mb-2">
-            <div className="w-3 h-3 rounded-full bg-yellow-500 shadow-[0_0_10px_#FFD700]"></div>
-            <span className="text-xs text-white font-mono">Bilavinakath Bloodline</span>
+            <div className="w-3 h-3 rounded-full bg-gradient-to-r from-yellow-400 to-pink-500"></div>
+            <span className="text-xs text-white font-mono">Generation Spectral</span>
         </div>
         <div className="flex items-center gap-3 mb-2">
-            <div className="w-3 h-3 rounded-full bg-indigo-500 shadow-[0_0_10px_#6366f1]"></div>
-            <span className="text-xs text-zinc-400 font-mono">Allied Families</span>
+            <div className="w-3 h-3 rounded-full bg-pink-500 shadow-[0_0_10px_#FF1493]"></div>
+            <span className="text-xs text-zinc-400 font-mono">Marriage Bond</span>
         </div>
         <div className="flex items-center gap-3">
             <div className="w-3 h-3 rounded-full border-2 border-zinc-400 bg-transparent"></div>
@@ -689,7 +693,7 @@ export default function FamilyGraph() {
              {selectedNode.img ? (
               <img src={selectedNode.img} alt="avatar" className={`w-12 h-12 rounded-full object-cover border-2 ${selectedNode.isDeceased ? 'border-zinc-400 grayscale' : 'border-white/20'}`} />
             ) : (
-              <div className={`w-12 h-12 rounded-full flex items-center justify-center ${selectedNode.isDeceased ? 'bg-zinc-600' : (clanSet.has(selectedNode.id) ? 'bg-yellow-600' : 'bg-indigo-600')}`}>
+              <div className={`w-12 h-12 rounded-full flex items-center justify-center ${selectedNode.isDeceased ? 'bg-zinc-600' : ''}`} style={{ backgroundColor: selectedNode.isDeceased ? undefined : getGenColor(selectedNode.level) }}>
                  <span className="text-xl font-bold text-white">{selectedNode.name.replace(/Late\.?\s*/i, '')[0]}</span>
               </div>
             )}
